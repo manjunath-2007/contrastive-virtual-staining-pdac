@@ -1,0 +1,335 @@
+# Understanding This Code, In Plain English
+
+This document explains what's inside the `ContrastiveVirtualStaining-main` code
+folder, what each file actually does, and — importantly — what this code
+**does** and **does not** cover, since the folder only contains part of the
+full pipeline described in the paper.
+
+---
+
+## 1. The Big Picture: What Is This Code For?
+
+Think of the full research project as having two separate stages:
+
+1. **Stage A — "Imagining" the special stain.** A separate AI model (a GAN)
+   looks at a plain H&E slide and generates a synthetic version of what the
+   special KRT81 or HNF1A stain would look like. **This code is not included
+   in this folder.**
+2. **Stage B — Making the actual diagnosis.** A second AI model looks at
+   thousands of small tiles cut from a slide (real or synthetic) and decides
+   whether the patient is KRT81-positive, HNF1A-positive, or double-negative.
+   **This is the part that lives in this folder.**
+
+So, in short: **this repository is the "decision-making" half of the project,
+not the "image-generating" half.** It assumes that somebody has already cut
+each slide into small patches and converted every patch into a list of
+numbers (called a "feature vector") using a separate feature-extraction tool
+— that step also happens *before* this code runs and is not included here
+either.
+
+---
+
+## 2. What's Actually in the Folder
+
+| File | What it is, in plain terms |
+|---|---|
+| `train.py` | The main "control room" script. It loads the pre-computed patch features, trains the diagnosis model, tests it, and saves the results. This is the file you would actually run. |
+| `ROC_CrossVal.py` | A "report card generator." After training is finished across all 5 rounds (folds), this script reloads the best version of the model from each round, re-checks its predictions, and produces one combined performance chart and score sheet. |
+| `environment.yaml` | A shopping list of software packages needed to set up the Python environment that this code runs in. |
+| `LICENSE.txt` | The legal terms for using this code (Creative Commons **Attribution-NonCommercial 4.0**) — in short, you can use and share it for free, but not for commercial purposes, and you must credit the original authors. |
+| `docs/` | Just image files (a results chart and the DKFZ institute's logo) used to make the project's public-facing README look nice — no actual program logic here. |
+| `README.md` | The original project description, written for a technical audience already familiar with AI/pathology terminology. This document you're reading now is a plain-language companion to it. |
+
+---
+
+## 3. What This Code Assumes You Already Have (But Doesn't Include)
+
+If you tried to run `train.py` exactly as-is, it would fail, because it
+depends on several ingredients that are **referenced but not provided** in
+this folder:
+
+- **`dsmil.py` / `abmil.py`** — the actual blueprint of the diagnosis model
+  (the neural network architecture itself). The code imports one of these
+  depending on a setting, but neither file is included.
+- **`Train_Test_Splitter.py`** — a small helper that would be responsible for
+  splitting patients into the 5 training/testing groups used for
+  cross-validation.
+- **`config.yaml`** — a settings file listing things like the learning rate,
+  number of training rounds, and which loss function to use.
+- **A CSV file (referred to as `Path.csv` or `KRT.csv`)** — a spreadsheet
+  listing, for every patient, where their pre-computed feature file is saved
+  on disk and what their correct diagnosis label is.
+- **`init.pth`** — a starting checkpoint (a file of initial "brain weights")
+  for the model, or alternatively a pretrained checkpoint the README says can
+  be downloaded separately from Google Drive.
+- **The actual feature files themselves** (the patch-level numeric
+  representations of each slide), which would have been produced by a
+  separate feature-extraction pipeline (using ResNet18 or the UNI foundation
+  model, as described in the paper) that also isn't part of this folder.
+
+In short: **this folder shows you the training logic, but not the model
+architecture, the configuration, or the data** — you'd need to supply or
+reconstruct those yourself to actually run it end-to-end.
+
+---
+
+## 4. `train.py`, Explained Step by Step
+
+Here's what happens if you imagine pressing "run" on this script, translated
+into everyday language:
+
+1. **Read the settings.** The script reads command-line options (like which
+   dataset to use — H&E, IHC, or synthetic IHC — and how many training
+   rounds to run) plus a `config.yaml` settings file.
+
+2. **Set up a "scoreboard" folder.** It creates a uniquely named output
+   folder (using the current date and time) where all results, logs, and
+   saved models for this run will be stored, so nothing overwrites a
+   previous run by accident.
+
+3. **Load the list of patients and their features.** It reads a spreadsheet
+   (a CSV file) that says, for each patient, where their pre-computed
+   feature file is and what their true diagnosis label is.
+
+4. **Split patients into 5 groups (folds).** This is called
+   **5-fold cross-validation**: the patients are divided into 5 roughly
+   equal groups. The model is trained 5 separate times, each time using 4
+   groups to learn from and the 1 remaining group to test on — so that,
+   across the 5 rounds, every patient eventually gets used for testing
+   exactly once, without ever being tested on data it was trained on.
+
+5. **For each of the 5 rounds:**
+   - **Build a fresh model.** The model has two connected parts: an
+     *instance classifier* that looks at one small tile at a time, and a
+     *bag classifier* that combines information from an entire slide's
+     worth of tiles (a "bag" of roughly 1,000–1,200 tiles) into one overall
+     decision. This two-part design is called **DSMIL** (Dual-Stream
+     Multiple Instance Learning) — think of it as one assistant scanning
+     individual close-up photos, and a supervisor combining all those
+     close-up impressions into a single final verdict.
+   - **Loop through training epochs (up to 3,000 of them).** In each
+     epoch, the model looks at every patient's bag of tile-features once,
+     makes a prediction, compares it to the correct answer, and slightly
+     adjusts itself to do better next time (this adjustment step is called
+     *backpropagation*, the standard way neural networks learn).
+   - **Randomly swap in "augmented" versions of the data.** To make the
+     model more robust, some of the tile-features it sees have been
+     deliberately distorted beforehand (color-shifted, blurred, flipped, or
+     noised), so the model doesn't get too comfortable with only pristine
+     images.
+   - **Check performance on the held-out test group.** After each training
+     epoch, the model is evaluated on the one group of patients it never
+     trained on this round, to see how well it's really doing.
+   - **Keep the best version.** Whenever the model achieves its best
+     combined score so far (a mix of AUC and per-patient accuracy), its
+     current "brain state" is saved to disk as a checkpoint, along with an
+     ROC curve chart (explained below) and the optimal decision threshold.
+   - **Log everything to TensorBoard**, a visualization tool that lets you
+     later browse graphs of how the loss and accuracy changed over time.
+
+6. **After all 5 rounds finish**, the script hands off to
+   `ROC_CrossVal.py` to produce one final, combined report across all 5
+   folds together.
+
+---
+
+## 5. `ROC_CrossVal.py`, Explained Step by Step
+
+This script runs once everything above is done, and its job is purely to
+**summarize** how well the whole 5-fold experiment performed overall:
+
+1. It reloads the best-performing saved checkpoint from each of the 5
+   training rounds.
+2. For each round, it re-runs that round's held-out test patients through
+   the model to get their predictions.
+3. It pools together the predictions and true answers from **all 5 rounds
+   combined**, since each patient was tested exactly once, giving one
+   unified set of results for the entire dataset — not just 5 separate
+   partial ones.
+4. It calculates the final headline numbers: **accuracy**, **AUC**,
+   **precision**, **recall**, and **F1-score** (see the glossary below for
+   what each of these means).
+5. It draws one final **ROC curve** — a standard chart used to show how
+   good a yes/no classifier is — and saves it as an image, with all the key
+   numbers printed directly on the chart's legend for easy reference.
+
+---
+
+## 6. `environment.yaml`, Explained
+
+This file is essentially a shopping list for setting up the correct Python
+environment using a tool called `conda`. It lists things like `pandas`
+(for handling spreadsheets of data), `matplotlib` and `seaborn` (for drawing
+charts), `numpy`/`scipy` (for numerical calculations), and `pydicom` (for
+handling a medical-imaging file format). Interestingly, it does **not**
+list PyTorch (the deep-learning library the code actually depends on most
+heavily) or `scikit-learn` — both are imported in `train.py` and
+`ROC_CrossVal.py` but appear to be expected to be installed separately,
+likely because the exact PyTorch version depends on which GPU hardware you
+have.
+
+---
+
+## 7. A Quick Glossary of the Trickier Terms
+
+- **Bag / Instance (Multiple Instance Learning):** Instead of labeling every
+  single tiny tile of a slide, you only know the correct answer for the
+  *whole slide*. So all the tiles from one slide are grouped into a "bag,"
+  and the model has to figure out, on its own, which tiles (instances)
+  inside that bag were the most important for reaching the final,
+  bag-level answer.
+- **Feature vector / embedding:** A list of numbers that summarizes what is
+  visually important in an image tile, produced by a separate,
+  already-trained encoder model — a compressed numerical "fingerprint" of
+  the image rather than the raw pixels themselves.
+- **Fold / Cross-validation:** A way of testing a model fairly by rotating
+  which group of patients is used for testing versus training, so that
+  every patient gets a turn as "unseen data," and the reported performance
+  isn't just luck based on one particular split.
+- **Checkpoint:** A saved snapshot of everything the model has learned so
+  far, which can be reloaded later to keep training, to make new
+  predictions, or to reproduce a result exactly.
+- **Epoch:** One complete pass of the model looking at every training
+  example exactly once.
+- **Threshold:** Since the model actually outputs a probability (like "73%
+  confident this is positive"), a threshold is the cutoff point above which
+  a prediction counts as "positive" instead of "negative." The code
+  automatically searches for the threshold value that gives the best
+  trade-off between catching true cases and avoiding false alarms.
+- **ROC curve / AUC:** A chart that shows how well a yes/no classifier
+  performs across every possible threshold, plotting the trade-off between
+  correctly caught positive cases and mistakenly flagged negative ones. AUC
+  ("Area Under the Curve") condenses that whole chart into one number
+  between 0.5 (no better than guessing) and 1.0 (perfect).
+- **Precision, Recall, F1-score:** Precision asks "of everything the model
+  called positive, how much was actually positive?" Recall asks "of
+  everything that was actually positive, how much did the model correctly
+  catch?" F1-score is a single number that balances both of these at once,
+  which is especially useful when positive and negative cases aren't
+  evenly balanced in the data (as is the case here).
+
+---
+
+## 8. How to Actually Run This Code
+
+As explained in Section 3, this folder is **not fully self-contained** — a
+few pieces are referenced by `train.py` but not included in the download.
+The steps below walk through everything you'd need to do, in order,
+flagging clearly which pieces you must supply yourself.
+
+### Step 1 — Set up the Python environment
+
+```bash
+# Create the environment from the provided file
+conda env create -f environment.yaml
+conda activate pdacsubtyping
+
+# The environment.yaml file is missing two packages the code actually
+# needs, so install them yourself, matching them to your GPU/CUDA version:
+pip install torch torchvision
+pip install scikit-learn
+```
+
+> **Why this extra step is needed:** `environment.yaml` lists helper
+> packages (pandas, matplotlib, etc.) but leaves out PyTorch and
+> scikit-learn, which `train.py` and `ROC_CrossVal.py` both import directly.
+> This is likely because the right PyTorch build depends on your specific
+> GPU and CUDA version, so the authors left it for you to install manually.
+
+### Step 2 — Supply the missing supporting files
+
+Place the following files in the same folder as `train.py` before running
+anything. None of these ship in this download:
+
+| File you must create/obtain | What it needs to contain |
+|---|---|
+| `dsmil.py` and/or `abmil.py` | The actual model architecture code. `train.py` does `import dsmil as mil` or `import abmil as mil` depending on a setting. The paper cites the original DSMIL implementation by Li, Li & Eliceiri (2021) — you would get this file from that project's public repository. |
+| `Train_Test_Splitter.py` | Must define a `Splitter` class/function that takes the patient list, a test-split ratio, a data key, the parsed arguments, and the number of folds, and returns the 5 train/test patient splits. |
+| `config.yaml` | A settings file with (at minimum) the keys: `num_classes`, `lr`, `num_epochs`, `weight_decay`, `split`, `model` (`"dsmil"` or `"abmil"`), `average`, `non_linearity`, `dropout_patch`, `dropout_node`, and `criterion` (`"BCE"` or `"CE"`). |
+| `Path.csv` | A spreadsheet (exactly this filename, in the working directory) with one row per patient/slide. Column 1 is the file path to that slide's pre-computed feature tensor (a `.pt` file saved with `torch.save`); column 2 is the numeric label (e.g. `0` or `1`). |
+| The feature `.pt` files themselves | Produced separately by a feature-extraction pipeline (ResNet18 or the UNI foundation model, as described in the paper) — not included here. |
+| `init.pth` | A starting checkpoint for the model, placed in the working directory (or pointed to via the `MODEL_INIT` environment variable if running with `--env cluster`). Alternatively, use the pretrained checkpoint the original authors shared here: <https://drive.google.com/drive/folders/1PLTbDy2WQ6eQvndkfTYaISqzMbQrR1n_?usp=drive_link> |
+
+### Step 3 — Set the required environment variable
+
+```bash
+# train.py reads this to decide where to save results/checkpoints/logs
+export EXPERIMENT_LOCATION=/path/to/your/output/folder
+```
+
+### Step 4 — Run the training script
+
+`train.py` is driven entirely by command-line flags. Based on what's visible
+in the code, here is what each flag controls and an example command:
+
+| Flag | Meaning | Example value |
+|---|---|---|
+| `--dataset` | Which input type/marker to train on | `KRT`, `HNF`, `HE#KRT`, `HE#HNF`, or `VirtualKRT` |
+| `--featssize` | Length of each patch's feature vector | `512` (ResNet18) or `2048` (UNI) |
+| `--seed` | Random seed, for reproducibility | `42` |
+| `--Folds` | Number of cross-validation folds | `5` |
+| `--augment` | Whether to randomly use augmented feature variants | `True` or `False` |
+| `--optimizer` | Which optimizer to train with | `AdamW` |
+| `--sampling` | Sampling strategy (read but not otherwise used in the visible code) | any placeholder value |
+| `--checkpoint` | Path to resume from a previous run's checkpoints, or omit to start fresh | leave unset for a fresh run |
+| `--env` | `"cluster"` redirects logs to a file and expects `MODEL_INIT`; anything else runs locally | `local` |
+| `--balancedSampler` | How to handle class imbalance | `over`, `Doubleover`, or any other value for "no change" |
+| `--featsExtractor` | Read by the script but not actually branched on in the visible code | `UNI` |
+
+Example command, training the KRT81 classifier with UNI features:
+
+```bash
+python train.py \
+  --dataset KRT \
+  --featssize 2048 \
+  --seed 42 \
+  --Folds 5 \
+  --augment True \
+  --optimizer AdamW \
+  --sampling default \
+  --env local \
+  --balancedSampler over \
+  --featsExtractor UNI
+```
+
+### Step 5 — What happens when it runs
+
+- A new, timestamped output folder is created under `EXPERIMENT_LOCATION`.
+- For each of the 5 folds, the script trains a fresh model for up to 3,000
+  epochs (as set in `config.yaml`), testing after every epoch and saving the
+  best checkpoint plus an ROC chart to that fold's `Weights/` subfolder.
+- Training progress can be watched live with TensorBoard:
+
+```bash
+tensorboard --logdir /path/to/your/output/folder
+```
+
+- Once all 5 folds finish, `train.py` automatically calls
+  `ROC_CrossVal.py` for you — you do not need to run it separately unless
+  you want to re-generate the combined report later from already-saved
+  checkpoints.
+
+### Step 6 — Find your results
+
+Inside your chosen `EXPERIMENT_LOCATION`, look for:
+- `Fold_0` … `Fold_4` folders, each with a `Weights/checkpoint_best_loss.pth`
+  and a `ROC.png` for that individual fold.
+- A final combined `ROC.png` (with AUC, accuracy, precision, recall, and
+  F1-score all printed on it) summarizing performance across all 5 folds
+  together.
+- A `config.yaml` copy and `Logs.txt` (if run with `--env cluster`) recording
+  exactly how that run was configured, for reproducibility.
+
+---
+
+## 9. Bottom Line
+
+This code folder is best understood as: **"Given that someone has already
+turned each pathology slide into a bag of numeric tile-features, here is how
+we train and evaluate the AI model that turns those features into a KRT81 /
+HNF1A diagnosis, using 5-fold cross-validation."** It is the evaluation and
+training engine for the paper's downstream classification results — not the
+virtual-staining image generator itself, and not a fully self-contained,
+ready-to-run package, since a few supporting files (the model architecture,
+the data splitter, the configuration file, and the data itself) are referenced
+but not included here.

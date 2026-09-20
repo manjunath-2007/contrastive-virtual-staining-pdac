@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# PyTorch model & checkpoint files (large binaries)
+*.pth
+*.pt
+
+# Demo / synthetic feature data
+demo_feats/
+
+# Experiment results and training outputs
+results/
+
+# TensorBoard logs
+TBRuns/
+events.out.tfevents.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Qodo
+.qodo/
+
+# Zip archives
+*.zip

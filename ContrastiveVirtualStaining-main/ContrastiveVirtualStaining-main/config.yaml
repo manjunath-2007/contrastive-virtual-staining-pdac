@@ -1,0 +1,11 @@
+num_classes: 1
+lr: 0.0002
+num_epochs: 5
+weight_decay: 0.001
+split: 0.2
+model: dsmil
+average: true
+non_linearity: 1
+dropout_patch: 0.0
+dropout_node: 0.0
+criterion: BCE
