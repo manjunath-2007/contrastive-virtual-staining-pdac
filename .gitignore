@@ -13,11 +13,16 @@ build/
 venv/
 env/
 .env/
+.env
+.env.*
+!.env.example
 .venv/
 
 # PyTorch model & checkpoint files (large binaries)
 *.pth
 *.pt
+*.ckpt
+*.safetensors
 
 # Demo / synthetic feature data
 demo_feats/
@@ -28,6 +33,24 @@ results/
 # TensorBoard logs
 TBRuns/
 events.out.tfevents.*
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node dependencies and build output
+node_modules/
+*.local
+
+# Caches and temporary files
+.cache/
+.caches/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
 
 # Jupyter
 .ipynb_checkpoints/
